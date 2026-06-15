@@ -22,7 +22,7 @@ The analysis follows three sequential steps of increasing spatial specificity:
 2. **Pearson correlation** (AND condition to cells selection) — within shared space, are values correlated?
 3. **Bivariate Moran's I** (AND condition to cells selection) — is that correlation spatially structured?
 
-Summary of steps in script **bivariateMoranIndex.Rmd**, with indication of checnks that need user minums edits (file name and tailor options for analisys):
+Summary of steps in script **bivariateMoranIndex.Rmd**, with indication of checnks that need user minimum edits (file name and tailor options for analisys):
 
 1) Input data — **EDIT THIS**
 2) Load & reproject
