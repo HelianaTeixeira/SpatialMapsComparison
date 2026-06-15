@@ -31,7 +31,7 @@ The analysis follows three sequential steps of increasing spatial specificity:
 3. **Bivariate Moran's I** (AND condition to cells selection) — is that correlation spatially structured?
 
 
-**Note: To make this analysis more meaningful we subset to presence-only cells before running the biv I test, to only look at variation among cells where values occur, not the presence/absence pattern itself (as we expect furthermore a lot of the studied area to be "empty"); otherwisewe would largely just confirm that ES don't occur everywhere in the Mediterranean, which we already knew!**
+*Note*: To make this analysis more meaningful we subset to presence-only cells before running the bivariate Moran Index test, to only look at variation among cells where values occur, not the presence/absence pattern itself (as we expect furthermore a lot of the studied area to be "empty"); otherwise we would largely just confirm that ES don't occur everywhere in the Mediterranean, which we already knew!
 
 ---
 
