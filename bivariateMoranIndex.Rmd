@@ -1,0 +1,480 @@
+---
+title: "Bivariate Moran's I — Spatial association between NegES and PosES"
+author: "HT"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+# Overview
+
+Reproducible workflow in R using **spdep** to compute Bivariate Moran's I for grid-cell data.
+
+**Usage:**
+
+- Add your data files to a subfolder named `dataInput`
+- Only edit code chunks marked **EDIT**
+
+**Input data requirements:**
+It can be raster or csv or shapefile. If input data is Shapefile with point geometry, you should have values to compare in a single shapefile with both results of to compare (e.g., pos and neg ES).
+- `grid.shp` — geometry
+- `grid.dbf` — attribute table with `NegES` and `PosES` columns
+- `grid.shx` — shape index
+- `grid.prj` — coordinate reference system (CRS)
+- No missing values (or handle them explicitly) (zeros are accepted)
+
+**Analytical logic:**
+
+The analysis follows three sequential steps of increasing spatial specificity:
+
+1. **Co-occurrence** (OR condition to cells selection) — do NegES and PosES share the same space?
+2. **Pearson correlation** (AND condition to cells selection) — within shared space, are values correlated?
+3. **Bivariate Moran's I** (AND condition to cells selection) — is that correlation spatially structured?
+
+
+**Note: To make this analysis more meaningful we subset to presence-only cells before running the biv I test, to only look at variation among cells where values occur, not the presence/absence pattern itself (as we expect furthermore a lot of the studied area to be "empty"); otherwisewe would largely just confirm that ES don't occur everywhere in the Mediterranean, which we already knew!**
+
+---
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(terra)   # modern raster package
+library(sf)
+library(spdep)
+library(here)
+library(ggplot2)
+
+```
+
+---
+
+## 1) Input data — EDIT THIS
+
+```{r input EDIT}
+fileName   <- here("dataInput", "CIMPAL-Meditteranean Sea.shp")  # edit file name
+input_type <- "shp"    # "shp", "raster", or "csv"
+input_crs  <- 4326     # only used for csv input
+target_crs <- 3035     # reproject to this (must be metres); 3035 = ETRS89 LAEA for Mediterranean
+```
+
+---
+
+## 2) Load & reproject
+
+```{r load data}
+grid <- switch(input_type,
+  "raster" = as.points(rast(fileName)) |> st_as_sf(),
+  "csv"    = st_as_sf(read.csv(fileName), coords = c("x", "y"), crs = input_crs),
+  "shp"    = st_read(fileName),
+  stop("input_type must be 'shp', 'raster', or 'csv'")
+)
+
+grid <- st_transform(grid, crs = target_crs)
+cat("CRS units:", st_crs(grid)$units, "\n")
+cat("Rows loaded:", nrow(grid), "\n")
+```
+
+---
+
+## 3) Choose neighbour method — EDIT THIS
+
+| `nb_method` | When to use |
+|---|---|
+| `"manual_dist"` | Regular grid, CRS in metres, you know the cell spacing |
+| `"auto_dist"` | Regular grid but you don't want to hard-code the distance |
+| `"knn"` | Best for regular grids — guarantees exactly k neighbours, no isolates |
+
+```{r nb method EDIT}
+
+nb_method <- "manual_dist" # edit, choose one from: "manual_dist" | "auto_dist" | "knn"
+
+# Only used if nb_method = "manual_dist"
+# e.g., 1000m = strictly adjacent (N/S/E/W); 1500m = includes diagonals (~1.41 km) on a 1 km grid
+manual_threshold <- 15000 # edit
+
+# Only used if nb_method = "knn"
+# k = 4 → N/S/E/W only; k = 8 → N/S/E/W + 4 diagonals
+knn_k <- 4 # edit
+```
+
+---
+
+## 4) Co-occurrence summary (OR condition — descriptive)
+
+Describes how NegES and PosES overlap spatially across all cells.
+
+```{r co-occurrence summary}
+grid_clean <- grid[!duplicated(st_geometry(grid)), ]
+grid_or    <- grid_clean[grid_clean$NegES != 0 | grid_clean$PosES != 0, ]
+
+n_both    <- nrow(grid_or[grid_or$NegES != 0 & grid_or$PosES != 0, ])
+n_neg     <- nrow(grid_or[grid_or$NegES != 0 & grid_or$PosES == 0, ])
+n_pos     <- nrow(grid_or[grid_or$NegES == 0 & grid_or$PosES != 0, ])
+n_total   <- nrow(grid_or)
+
+cat("=== Co-occurrence summary ===\n")
+cat("Total cells with any ES signal:      ", n_total, "\n")
+cat("Cells with NegES only:               ", n_neg, 
+    "(", round(n_neg / n_total * 100, 1), "%)\n")
+cat("Cells with PosES only:               ", n_pos, 
+    "(", round(n_pos / n_total * 100, 1), "%)\n")
+cat("Cells with BOTH (co-occurrence):     ", n_both, 
+    "(", round(n_both / n_total * 100, 1), "%)\n")
+```
+
+---
+
+## 5) Pearson correlation (AND condition)
+
+Non-spatial correlation between NegES and PosES within co-occurrence cells.
+This is a prerequisite check before spatial analysis — a high Bivariate Moran's I is only meaningful if the underlying non-spatial correlation is also strong.
+
+```{r pearson}
+grid_and <- grid_clean[grid_clean$NegES != 0 & grid_clean$PosES != 0, ]
+
+pearson_r <- cor.test(grid_and$NegES, grid_and$PosES)
+
+cat("=== Pearson correlation (co-occurrence cells only) ===\n")
+cat("n cells:    ", nrow(grid_and), "\n")
+cat("NegES — mean:", round(mean(grid_and$NegES), 3), 
+              " sd:", round(sd(grid_and$NegES), 3), "\n")
+cat("PosES — mean:", round(mean(grid_and$PosES), 3), 
+              " sd:", round(sd(grid_and$PosES), 3), "\n")
+cat("Pearson r:  ", round(pearson_r$estimate, 3), "\n")
+cat("p-value:    ", pearson_r$p.value, "\n")
+cat("95% CI:     ", round(pearson_r$conf.int[1], 3), 
+              "—", round(pearson_r$conf.int[2], 3), "\n")
+
+# Distribution plots
+par(mfrow = c(1, 2))
+hist(grid_and$NegES, main = "NegES distribution", xlab = "NegES", breaks = 50, col = "#ea4b36")
+hist(grid_and$PosES, main = "PosES distribution", xlab = "PosES", breaks = 50, col = "#369b53")
+par(mfrow = c(1, 1))
+```
+
+---
+
+## 6) Build spatial weights (AND condition)
+
+```{r build neighbours}
+# ---- Helper: build neighbour object from chosen method ----
+build_nb <- function(coords, method, manual_threshold, knn_k) {
+  coords <- as.matrix(coords[, 1:2])
+  storage.mode(coords) <- "double"
+
+  if (method == "auto_dist") {
+    k1       <- knn2nb(knearneigh(coords, k = 1))
+    max_dist <- max(unlist(nbdists(k1, coords)))
+    message("Auto threshold: ", round(max_dist), " m")
+    dnearneigh(coords, d1 = 0, d2 = max_dist)
+
+  } else if (method == "manual_dist") {
+    dnearneigh(coords, d1 = 0, d2 = manual_threshold)
+
+  } else if (method == "knn") {
+    knn2nb(knearneigh(coords, k = knn_k))
+
+  } else {
+    stop("Unknown nb_method. Choose: 'auto_dist', 'manual_dist', or 'knn'.")
+  }
+}
+
+# ---- Subset to co-occurrence cells ----
+grid_presence <- grid_clean[grid_clean$NegES != 0 & grid_clean$PosES != 0, ]
+cat("Co-occurrence cells:", nrow(grid_presence), "\n")
+
+# ---- Extract centroids ----
+coords_presence <- suppressWarnings(
+  st_coordinates(st_centroid(grid_presence))[, 1:2]
+)
+
+# ---- Build initial neighbour structure ----
+nb_presence <- build_nb(coords_presence, nb_method, manual_threshold, knn_k)
+lw_presence <- nb2listw(nb_presence, style = "W", zero.policy = TRUE)
+
+cat("CRS units:", st_crs(grid_presence)$units, "\n")
+cat("Isolated cells before pruning:", sum(card(nb_presence) == 0), "\n")
+```
+
+```{r remove isolated cells}
+# ---- Iteratively remove isolated cells ----
+# Only relevant for distance-band methods; knn never produces isolates
+repeat {
+  isolated <- which(card(nb_presence) == 0)
+  if (length(isolated) == 0) break
+
+  if (nrow(grid_presence) - length(isolated) < 3) {
+    warning("Too few presence cells remain after removing isolates — stopping early.")
+    grid_presence <- grid_presence[-isolated, ]
+    break
+  }
+
+  grid_presence   <- grid_presence[-isolated, ]
+  coords_presence <- suppressWarnings(
+    st_coordinates(st_centroid(grid_presence))[, 1:2]
+  )
+  nb_presence <- build_nb(coords_presence, nb_method, manual_threshold, knn_k)
+  lw_presence <- nb2listw(nb_presence, style = "W", zero.policy = TRUE)
+}
+
+# ---- Verify ----
+stopifnot(sum(card(nb_presence) == 0) == 0)
+
+# ---- Extract variables ----
+x <- grid_presence$NegES
+y <- grid_presence$PosES
+
+stopifnot(length(x) == length(y), 
+          length(x) == nrow(grid_presence),
+          length(lw_presence$neighbours) == nrow(grid_presence))
+
+cat("Final cells for analysis:", nrow(grid_presence), "\n")
+cat("Isolated cells remaining:", sum(card(nb_presence) == 0), "\n")
+```
+
+---
+
+## 7) Global Bivariate Moran's I
+
+```{r global morans i}
+spdep::set.ZeroPolicyOption(TRUE)
+res <- moran_bv(x, y, lw_presence, nsim = 999)
+
+cat("=== Global Bivariate Moran's I ===\n")
+cat("Bivariate Moran's I:", round(res$t0, 4), "\n")
+cat("p-value:            ", (sum(res$t >= res$t0) + 1) / (length(res$t) + 1), "\n")
+cat("Bias:               ", round(mean(res$t) - res$t0, 6), "\n")
+cat("Std. error:         ", round(sd(res$t), 6), "\n")
+```
+
+**Output interpretation:**
+
+| I value | Meaning |
+|---|---|
+| I > 0 | Similar values cluster together spatially |
+| I < 0 | Opposing values cluster spatially |
+| I ≈ 0 | No spatial relationship |
+
+Permutation p-value `< 0.05` → significant spatial association.
+
+---
+
+## 8) Local Bivariate Moran's I (LISA)
+
+Identifies *where* the spatial association is strongest.
+
+| Quadrant | Ecological meaning |
+|---|---|
+| HH (red) | High NegES surrounded by high PosES — co-occurrence hotspots |
+| LL (blue) | Low NegES surrounded by low PosES — marginal areas |
+| HL (orange) | High NegES, low PosES neighbours — negative ES hotspots: Degradation without benefit — negative trade-off |
+| LH (light blue) | Low NegES, high PosES neighbours — positive ES hotspots: Benefit without degradation — positive trade-off |
+
+HL & LH are spatial trade-off zones.
+
+```{r local LISA}
+# ---- Spatially lag y ----
+y_lag     <- lag.listw(lw_presence, y)
+x_std     <- scale(x)[, 1]
+y_lag_std <- scale(y_lag)[, 1]
+
+# ---- Local statistic ----
+local_bv              <- x_std * y_lag_std
+grid_presence$local_bv <- local_bv
+
+# ---- Significance via permutation ----
+set.seed(123)
+nsim <- 999
+
+local_bv_sim <- replicate(nsim, {
+  y_perm      <- sample(y)
+  y_lag_p     <- lag.listw(lw_presence, y_perm)
+  y_lag_std_p <- scale(y_lag_p)[, 1]
+  x_std * y_lag_std_p
+})
+
+p_local                <- rowMeans(abs(local_bv_sim) >= abs(local_bv))
+grid_presence$p_local  <- p_local
+
+# ---- Classify LISA quadrants ----
+grid_presence$lisa_class <- NA_character_
+sig <- p_local < 0.05
+
+grid_presence$lisa_class[sig & x_std >  0 & y_lag_std >  0] <- "HH"
+grid_presence$lisa_class[sig & x_std <  0 & y_lag_std <  0] <- "LL"
+grid_presence$lisa_class[sig & x_std >  0 & y_lag_std <  0] <- "HL"
+grid_presence$lisa_class[sig & x_std <  0 & y_lag_std >  0] <- "LH"
+
+cat("=== LISA cluster counts ===\n")
+print(table(grid_presence$lisa_class, useNA = "ifany"))
+```
+
+The proportion of HH vs HL vs LH cells will tell whether co-occurrence hotspots or trade-off zones dominate the significant cells.
+
+```{r spatial coherence}
+# ---- Spatial coherence of significant clusters ----
+sig_cells <- grid_presence[!is.na(grid_presence$lisa_class), ]
+
+nb_lisa <- knn2nb(knearneigh(
+  st_coordinates(st_centroid(sig_cells)), k = 1))
+
+cat("Significant cells:          ", nrow(sig_cells), "\n")
+cat("Spatial sub-graphs (patches):", attr(nb_lisa, "ncomp")$nc, "\n")
+cat("Mean patch size:            ", round(nrow(sig_cells) / attr(nb_lisa, "ncomp")$nc, 1), "cells\n")
+```
+
+```{r cluster counts per LISA class}
+# ---- Number of spatial sub-graphs per LISA class ----
+
+lisa_classes <- c("HH", "LL", "HL", "LH")
+
+for (cls in lisa_classes) {
+  
+  cells <- grid_presence[!is.na(grid_presence$lisa_class) & 
+                           grid_presence$lisa_class == cls, ]
+  
+  if (nrow(cells) == 0) {
+    cat(cls, "— no significant cells\n")
+    next
+  }
+  
+  nb_cls   <- knn2nb(knearneigh(
+    st_coordinates(st_centroid(cells)), k = 1))
+  n_patches <- attr(nb_cls, "ncomp")$nc
+  
+  cat(cls, "—",
+      "cells:", nrow(cells), "|",
+      "patches:", n_patches, "|",
+      "mean patch size:", round(nrow(cells) / n_patches, 1), "\n")
+}
+```
+
+
+```{r map lisa}
+# ---- Reclassify for plotting (non-significant shown as grey) ----
+grid_presence$lisa_plot <- ifelse(is.na(grid_presence$lisa_class),
+                                  "Not significant",
+                                  grid_presence$lisa_class)
+
+ggplot(grid_presence) +
+  geom_sf(aes(colour = lisa_plot), size = 0.8) +
+  scale_colour_manual(
+    values = c(
+      "HH"              = "#fdae61", 
+      "LL"              = "#abd9e9",
+      "HL"              = "#ea4b36", 
+      "LH"              = "#369b53",
+      "Not significant" = "grey80"
+    ),
+    name = "LISA cluster",
+    labels = c(
+      "HH"              = "High–High (co-occurrence hotspot)",
+      "LL"              = "Low–Low (marginal area)",
+      "HL"              = "High NegES / Low PosES (-ve trade-off)",
+      "LH"              = "Low NegES / High PosES (+ve trade-off)",
+      "Not significant" = "Not significant"
+    )
+  ) +
+  labs(
+    title    = "Local Bivariate Moran's I (LISA)",
+    subtitle = "NegES ~ spatially lagged PosES | p < 0.05",
+    caption  = paste0(
+      ifelse(nb_method == "manual_dist", 
+             paste0(manual_threshold / 1000, " km distance band"), 
+             paste0("knn k = ", knn_k)),
+      " | EPSG:", target_crs)
+  ) +
+  theme_minimal()
+```
+Patches exploration:
+```{r patches size}
+# Size distribution of patches
+comp <- n.comp.nb(nb_lisa)
+patch_sizes <- sort(table(comp$comp.id), decreasing = TRUE)
+cat("Largest patches (top 10):\n")
+print(head(patch_sizes, 10))
+cat("Singletons (patch size = 1):", sum(patch_sizes == 1), "\n")
+cat("Patches of size >= 10:", sum(patch_sizes >= 10), "\n")
+```
+```{r save map}
+# ---- Save LISA map for publication ----
+
+# Recreate plot as object
+lisa_map <- ggplot(grid_presence) +
+  geom_sf(aes(colour = lisa_plot), size = 0.8) +
+  scale_colour_manual(
+    values = c(
+      "HH"              = "#fdae61", 
+      "LL"              = "#abd9e9",
+      "HL"              = "#ea4b36", 
+      "LH"              = "#369b53",
+      "Not significant" = "grey80"
+    ),
+    name = "LISA cluster",
+    labels = c(
+      "HH"              = "High–High (co-occurrence hotspot)",
+      "LL"              = "Low–Low (marginal area)",
+      "HL"              = "High NegES / Low PosES (-ve trade-off)",
+      "LH"              = "Low NegES / High PosES (+ve trade-off)",
+      "Not significant" = "Not significant"
+    )
+  ) +
+  labs(
+    title    = "Local Bivariate Moran's I (LISA)",
+    subtitle = "NegES ~ spatially lagged PosES | p < 0.05",
+    caption  = paste0(
+      ifelse(nb_method == "manual_dist",
+             paste0(manual_threshold / 1000, " km distance band"),
+             paste0("knn k = ", knn_k)),
+      " | EPSG:", target_crs)
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position   = "right",
+    legend.title      = element_text(face = "bold", size = 10),
+    legend.text       = element_text(size = 9),
+    plot.title        = element_text(face = "bold", size = 13),
+    plot.subtitle     = element_text(size = 10, colour = "grey40"),
+    plot.caption      = element_text(size = 8, colour = "grey50"),
+    panel.grid.major  = element_line(colour = "grey90"),
+    panel.grid.minor  = element_blank()
+  )
+
+# ---- Export ----
+# TIFF — preferred by most journals (300 dpi, CMYK-compatible)
+ggsave(
+  filename = here("outputs", "LISA_map.tiff"),
+  plot     = lisa_map,
+  width    = 180,   # mm — standard single-column width; use 90 for half-page
+  height   = 140,   # mm — adjust to match your study area aspect ratio
+  units    = "mm",
+  dpi      = 300,
+  compression = "lzw"  # lossless compression for TIFF
+)
+
+# PDF — vector format, ideal for resizing without quality loss
+ggsave(
+  filename = here("outputs", "LISA_map.pdf"),
+  plot     = lisa_map,
+  width    = 180,
+  height   = 140,
+  units    = "mm"
+)
+
+cat("Maps saved to outputs/ folder:\n")
+cat("  LISA_map.tiff — 300 dpi, LZW compressed (for journal submission)\n")
+cat("  LISA_map.pdf  — vector format (for editing in Illustrator/Inkscape)\n")
+```
+```
+
+
+---
+
+### Common pitfalls
+
+- ❌ Mismatched grids → invalid comparison
+- ❌ Isolated cells with no neighbours → use `zero.policy = TRUE` and prune iteratively
+- ❌ Strong spatial autocorrelation inflating I → always use permutations (`nsim = 999`)
+- ❌ OR condition with many zeros → use AND condition for Bivariate Moran's I; OR condition for descriptive co-occurrence only
+- ❌ Wrong CRS → reproject to a metric CRS (EPSG:3035 for Mediterranean) before building neighbours
+- ❌ Interpreting I as a difference → it measures **association**, not difference
