@@ -6,7 +6,7 @@ Add spatial data to be analysed in folder **dataInput**.
 **Input data requirements:**
 It can be **raster** or **csv** or **shapefile**. 
 
-If input data is Shapefile with point geometry, you should have values to compare in a single shapefile with both results of to compare (e.g., posES and negES).
+If input data is Shapefile with point geometry, you should have values to compare in a single shapefile (e.g., posES and negES).
 
 - `grid.shp` — geometry
 - `grid.dbf` — attribute table with `NegES` and `PosES` columns
