@@ -9,7 +9,7 @@ It can be **raster** or **csv** or **shapefile**.
 If input data is Shapefile with point geometry, you should have values to compare in a single shapefile (e.g., posES and negES).
 
 - `grid.shp` — geometry
-- `grid.dbf` — attribute table with `NegES` and `PosES` columns
+- `grid.dbf` — attribute table with `NegES` and `PosES` columns' values
 - `grid.shx` — shape index
 - `grid.prj` — coordinate reference system (CRS)
 - No missing values (or handle them explicitly) (zeros are accepted)
